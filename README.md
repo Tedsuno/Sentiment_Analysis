@@ -2,7 +2,7 @@
 
 Ce projet est une pipeline Big Data complète capable d'ingérer, traiter et visualiser des sentiments (Positif/Négatif/Neutre) sur des flux de données de réseaux sociaux en temps réel.
 
-## 🏗️ Architecture
+## 🏗️ Architecture 
 
 Le projet suit une architecture Lambda simplifiée pour le streaming :
 
@@ -33,8 +33,8 @@ Le projet suit une architecture Lambda simplifiée pour le streaming :
     pip install -r requirements.txt
     ```
 
-3.  **Note pour Windows :**
-    Le projet inclut un dossier `hadoop/bin` avec `winutils.exe` et `hadoop.dll` nécessaires pour faire tourner Spark sur Windows sans erreur. Le script `spark_processor.py` configure automatiquement les variables d'environnement pour utiliser ce dossier.
+3.  **Note importante pour Windows :**
+    Le projet inclut un dossier `hadoop/bin` contenant `winutils.exe` et `hadoop.dll`. Ces fichiers sont **indispensables** pour faire tourner Spark sur Windows sans erreur. Le script `spark_processor.py` configure automatiquement les variables d'environnement pour utiliser ce dossier.
 
 ---
 
