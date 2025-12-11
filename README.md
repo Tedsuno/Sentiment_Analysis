@@ -1,4 +1,4 @@
-# 🐦 Real-Time Social Media Sentiment Analysis
+#  Real-Time Social Media Sentiment Analysis
 
 Ce projet est une pipeline Big Data complète capable d'ingérer, traiter et visualiser des sentiments (Positif / Négatif / Neutre) sur des flux de données de réseaux sociaux en temps réel.
 
@@ -158,3 +158,4 @@ docker-compose down
 Tous les services (Kafka, Zookeeper, MongoDB) sont alors arrêtés.
 
 ---
+
