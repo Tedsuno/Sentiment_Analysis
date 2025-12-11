@@ -1,116 +1,333 @@
-import streamlit as st
-import pandas as pd
-import numpy as np # Ajouté pour gérer les erreurs maths
-from pymongo import MongoClient
 import time
+import numpy as np
+import pandas as pd
+import streamlit as st
+from pymongo import MongoClient
 import plotly.express as px
 import plotly.graph_objects as go
 
-# --- FIX : IGNORER LES ERREURS DE CALCUL (Overflow) ---
-np.seterr(all='ignore')
-# ------------------------------------------------------
+# config globale
+st.set_page_config(
+    page_title="sentiment streaming monitor",
+    page_icon="",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
-# --- CONFIG ---
-st.set_page_config(page_title="Big Data Monitor", page_icon="📡", layout="wide", initial_sidebar_state="collapsed")
+np.seterr(all="ignore")
 
-# --- CSS ---
-st.markdown("""
-    <style>
-        .main { background-color: #0E1117; }
-        .metric-card { background-color: #1a1c24; border: 1px solid #333; padding: 20px; border-radius: 12px; text-align: center; }
-        h1, h2, h3 { color: #00acee !important; }
-        .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-        .stTabs [data-baseweb="tab"] { height: 50px; background-color: #1a1c24; border-radius: 5px; color: #888; }
-        .stTabs [aria-selected="true"] { background-color: #00acee !important; color: white !important; }
-    </style>
-""", unsafe_allow_html=True)
-
-# --- MONGO ---
+# connexion mongodb
 @st.cache_resource
 def init_connection():
-    try: return MongoClient("mongodb://localhost:27017/")
-    except: return None
+    try:
+        client = MongoClient("mongodb://localhost:27017/")
+        return client
+    except:
+        return None
+
 client = init_connection()
 
-COLOR_MAP = {'POSITIF':'#00CC96', 'NEGATIF':'#EF553B', 'NEUTRE':'#636EFA'}
+# couleurs par sentiment
+COLOR_MAP = {
+    "POSITIF": "#00CC96",
+    "NEGATIF": "#EF553B",
+    "NEUTRE": "#636EFA",
+}
 
-st.title("📡 Kafka Streaming Analytics")
+# titre
+st.title("analyse de sentiment en temps reel")
+st.markdown("")
 st.markdown("---")
-placeholder = st.empty()
 
+placeholder = st.empty()
+REFRESH_EVERY_SEC = 3  # frequence de refresh
+
+# boucle principale
 while True:
     refresh_id = str(time.time())
+
     if client is None:
-        st.error("MongoDB off"); time.sleep(5); continue
+        with placeholder.container():
+            st.error(
+                "impossible de se connecter a mongodb (localhost:27017). lance le service docker mongo."
+            )
+        time.sleep(REFRESH_EVERY_SEC)
+        continue
 
+    # lecture des donnees
     try:
-        db = client["twitter_db"]
-        collection = db["sentiments"]
-        data = list(collection.find().sort("_id", -1).limit(1000))
+        collection = client["twitter_db"]["sentiments"]
+        data = list(collection.find().sort("_id", -1).limit(2000))
         df = pd.DataFrame(data)
-        
-        # --- GESTION ROBUSTE DU TEMPS ---
-        has_time = False
-        if not df.empty and 'timestamp' in df.columns:
-            # On force la conversion en numérique d'abord pour éviter les bugs
-            df['timestamp'] = pd.to_numeric(df['timestamp'], errors='coerce')
-            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s', errors='coerce')
-            df = df.dropna(subset=['datetime'])
-            if not df.empty:
-                df = df.sort_values(by='datetime')
-                has_time = True
-        # -------------------------------
-
     except Exception as e:
-        time.sleep(2); continue
+        with placeholder.container():
+            st.error(f"erreur de lecture mongodb : {e}")
+        time.sleep(REFRESH_EVERY_SEC)
+        continue
 
+    # preparation du temps
+    has_time = False
+    if not df.empty and "timestamp" in df.columns:
+        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
+        df["datetime"] = pd.to_datetime(df["timestamp"], unit="s", errors="coerce")
+        df = df.dropna(subset=["datetime"])
+        if not df.empty:
+            df = df.sort_values(by="datetime")
+            has_time = True
+
+    # affichage dashboard
     with placeholder.container():
         if df.empty:
-            st.info("⏳ En attente de données Kafka...")
+            st.info("en attente de donnees kafka / spark...")
         else:
             total = len(df)
-            pos_pct = (len(df[df['sentiment']=='POSITIF'])/total*100)
-            neg_pct = (len(df[df['sentiment']=='NEGATIF'])/total*100)
-            
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Flux (Window)", total)
-            k2.metric("Positif", f"{pos_pct:.1f}%")
-            k3.metric("Négatif", f"{neg_pct:.1f}%")
-            k4.metric("Status", "🟢 LIVE")
 
-            tab1, tab2, tab3 = st.tabs(["Vue Globale", "Time Series", "Data"])
+            sentiment_counts = df["sentiment"].value_counts()
+            pos_pct = (
+                sentiment_counts.get("POSITIF", 0) / total * 100 if total > 0 else 0
+            )
+            neg_pct = (
+                sentiment_counts.get("NEGATIF", 0) / total * 100 if total > 0 else 0
+            )
+            neu_pct = (
+                sentiment_counts.get("NEUTRE", 0) / total * 100 if total > 0 else 0
+            )
 
+            # kpi
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("positifs (%)", f"{pos_pct:0.1f}")
+            c2.metric("negatifs (%)", f"{neg_pct:0.1f}")
+            c3.metric("neutres (%)", f"{neu_pct:0.1f}")
+            c4.metric("nb messages (fenetre)", total)
+
+            st.markdown("---")
+
+            # onglets
+            tab1, tab2, tab3, tab4 = st.tabs(
+                ["vue globale", "par topic", "chronologie", "donnees brutes"]
+            )
+
+            # onglet 1 : vue globale
             with tab1:
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig_sun = px.sunburst(df, path=['topic', 'sentiment'], color='sentiment', color_discrete_map=COLOR_MAP)
-                    fig_sun.update_layout(margin=dict(t=0,b=0,l=0,r=0), paper_bgcolor="rgba(0,0,0,0)")
-                    st.plotly_chart(fig_sun, use_container_width=True, key=f"sun_{refresh_id}")
-                with c2:
-                    counts = df['sentiment'].value_counts().reset_index()
-                    counts.columns = ['sentiment', 'count']
-                    fig_bar = px.bar(counts, x='sentiment', y='count', color='sentiment', color_discrete_map=COLOR_MAP)
-                    fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                    st.plotly_chart(fig_bar, use_container_width=True, key=f"bar_{refresh_id}")
+                # ligne 1
+                col_a, col_b = st.columns(2)
 
+                # graphique 1 : camembert sentiments
+                with col_a:
+                    fig_pie = px.pie(
+                        df,
+                        names="sentiment",
+                        title="repartition globale des sentiments",
+                        color="sentiment",
+                        color_discrete_map=COLOR_MAP,
+                        hole=0.4,
+                    )
+                    fig_pie.update_layout(
+                        legend_title_text="sentiment",
+                        margin=dict(t=40, b=0, l=0, r=0),
+                    )
+                    st.plotly_chart(
+                        fig_pie, use_container_width=True, key=f"pie_{refresh_id}"
+                    )
+
+                # graphique 2 : histogramme topics
+                with col_b:
+                    fig_topic_count = px.histogram(
+                        df,
+                        x="topic",
+                        title="nb messages par topic (brut)",
+                        text_auto=True,
+                    )
+                    fig_topic_count.update_layout(
+                        margin=dict(t=40, b=0, l=0, r=0),
+                        yaxis_title="nb messages",
+                    )
+                    st.plotly_chart(
+                        fig_topic_count,
+                        use_container_width=True,
+                        key=f"topic_count_{refresh_id}",
+                    )
+
+                # ligne 2
+                col_c, col_d = st.columns(2)
+
+                # graphique 3 : nb messages par sentiment
+                with col_c:
+                    df_sent_cnt = (
+                        df.groupby("sentiment")
+                        .size()
+                        .reset_index(name="nb_messages")
+                        .sort_values("nb_messages", ascending=False)
+                    )
+                    fig_bar_sent = px.bar(
+                        df_sent_cnt,
+                        x="sentiment",
+                        y="nb_messages",
+                        title="nb messages par sentiment",
+                        text_auto=True,
+                        color="sentiment",
+                        color_discrete_map=COLOR_MAP,
+                    )
+                    fig_bar_sent.update_layout(
+                        yaxis_title="nb messages",
+                        margin=dict(t=40, b=0, l=0, r=0),
+                    )
+                    st.plotly_chart(
+                        fig_bar_sent,
+                        use_container_width=True,
+                        key=f"bar_sent_{refresh_id}",
+                    )
+
+                # graphique 4 : nb messages par topic et sentiment (groupes)
+                with col_d:
+                    if "topic" in df.columns:
+                        df_topic_sent = (
+                            df.groupby(["topic", "sentiment"])
+                            .size()
+                            .reset_index(name="nb_messages")
+                        )
+                        fig_group = px.bar(
+                            df_topic_sent,
+                            x="topic",
+                            y="nb_messages",
+                            color="sentiment",
+                            color_discrete_map=COLOR_MAP,
+                            barmode="group",
+                            title="nb messages par topic et sentiment",
+                            text_auto=True,
+                        )
+                        fig_group.update_layout(
+                            yaxis_title="nb messages",
+                            margin=dict(t=40, b=0, l=0, r=0),
+                        )
+                        st.plotly_chart(
+                            fig_group,
+                            use_container_width=True,
+                            key=f"group_{refresh_id}",
+                        )
+                    else:
+                        st.warning("pas de colonne topic dans les donnees.")
+
+            # onglet 2 : par topic
             with tab2:
-                if has_time:
-                    df_time = df.set_index('datetime')
-                    df_trend = df_time.groupby([pd.Grouper(freq='1Min'), 'sentiment']).size().reset_index(name='count')
-                    fig_line = px.line(df_trend, x='datetime', y='count', color='sentiment', color_discrete_map=COLOR_MAP, markers=True)
-                    fig_line.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                    st.plotly_chart(fig_line, use_container_width=True, key=f"line_{refresh_id}")
-                    
-                    df_vol = df_time.resample('1Min').size().reset_index(name='count')
-                    fig_area = px.area(df_vol, x='datetime', y='count')
-                    fig_area.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                    st.plotly_chart(fig_area, use_container_width=True, key=f"area_{refresh_id}")
+                if "topic" in df.columns:
+                    grouped = (
+                        df.groupby(["topic", "sentiment"])
+                        .size()
+                        .reset_index(name="count")
+                    )
+                    grouped["pct"] = grouped["count"] / grouped.groupby(
+                        "topic"
+                    )["count"].transform("sum") * 100
+
+                    fig_stack = px.bar(
+                        grouped,
+                        x="topic",
+                        y="pct",
+                        color="sentiment",
+                        color_discrete_map=COLOR_MAP,
+                        title="repartition (%) des sentiments par topic",
+                        text_auto=".1f",
+                    )
+                    fig_stack.update_layout(
+                        yaxis_title="pct",
+                        margin=dict(t=40, b=0, l=0, r=0),
+                        barmode="stack",
+                    )
+                    st.plotly_chart(
+                        fig_stack,
+                        use_container_width=True,
+                        key=f"stack_{refresh_id}",
+                    )
+
+                    pivot = (
+                        grouped.pivot(
+                            index="topic", columns="sentiment", values="count"
+                        )
+                        .fillna(0)
+                        .astype(int)
+                    )
+                    fig_heat = px.imshow(
+                        pivot,
+                        text_auto=True,
+                        aspect="auto",
+                        title="heatmap topic x sentiment (nb messages)",
+                    )
+                    st.plotly_chart(
+                        fig_heat,
+                        use_container_width=True,
+                        key=f"heat_{refresh_id}",
+                    )
                 else:
-                    st.warning("⚠️ Les timestamps arrivent... (Attendez quelques secondes)")
+                    st.warning("pas de colonne topic dans les donnees.")
 
+            # onglet 3 : chronologie
             with tab3:
-                cols_to_show = ['topic', 'sentiment', 'text']
-                if has_time: cols_to_show.insert(0, 'datetime')
-                st.dataframe(df[cols_to_show].sort_index(ascending=False).head(20), use_container_width=True, hide_index=True)
+                if has_time:
+                    df_time = df.set_index("datetime")
 
-    time.sleep(2)
+                    vol = df_time.resample("1Min").size().reset_index(name="count")
+                    fig_vol = px.area(
+                        vol,
+                        x="datetime",
+                        y="count",
+                        title="nb messages par minute",
+                    )
+                    fig_vol.update_layout(
+                        xaxis_title="temps",
+                        yaxis_title="nb messages",
+                        margin=dict(t=40, b=0, l=0, r=0),
+                    )
+                    st.plotly_chart(
+                        fig_vol,
+                        use_container_width=True,
+                        key=f"vol_{refresh_id}",
+                    )
+
+                    pos = (
+                        df_time[df_time["sentiment"] == "POSITIF"]
+                        .resample("5Min")
+                        .size()
+                    )
+                    total_t = df_time.resample("5Min").size()
+                    ratio = (pos / total_t * 100).fillna(0).reset_index(name="pos_pct")
+
+                    fig_pos = px.line(
+                        ratio,
+                        x="datetime",
+                        y="pos_pct",
+                        title="part de messages positifs (%) dans le temps (fenetre 5 min)",
+                    )
+                    fig_pos.update_layout(
+                        xaxis_title="temps",
+                        yaxis_title="positifs (%)",
+                        margin=dict(t=40, b=0, l=0, r=0),
+                    )
+                    st.plotly_chart(
+                        fig_pos,
+                        use_container_width=True,
+                        key=f"pos_{refresh_id}",
+                    )
+                else:
+                    st.warning(
+                        "les timestamps ne sont pas encore exploitables. attendre quelques secondes."
+                    )
+
+            # onglet 4 : donnees brutes
+            with tab4:
+                st.subheader("derniers messages")
+
+                cols_to_show = ["topic", "sentiment", "text"]
+                if has_time:
+                    cols_to_show.insert(0, "datetime")
+
+                st.dataframe(
+                    df[cols_to_show]
+                    .sort_values(by=cols_to_show[0], ascending=False)
+                    .head(50),
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"table_{refresh_id}",
+                )
+
+    time.sleep(REFRESH_EVERY_SEC)
